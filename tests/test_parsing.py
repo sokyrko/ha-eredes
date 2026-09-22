@@ -6,6 +6,7 @@ timestamp parsing, and the deliberate absence of any data-quality filtering.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -271,6 +272,90 @@ def test_readings_are_sorted_by_timestamp() -> None:
 def test_unsuccessful_response_yields_no_readings() -> None:
     """``Success: false`` is not parsed for data."""
     assert _parse(_response([_curve()], success=False)) == []
+
+
+def _unsuccessful(
+    statuses: dict[str, Any] | list[dict[str, Any]] | None,
+    *,
+    response_code: int = -1,
+) -> dict[str, Any]:
+    """Build an envelope whose body says only that it failed."""
+    header: dict[str, Any] = {"Status": {"ResponseCode": response_code}}
+    if statuses is not None:
+        header["Status"]["ResponseStatuses"] = {"ResponseStatus": statuses}
+    return {
+        "Header": header,
+        "Body": {"Success": False, "Result": None},
+    }
+
+
+def test_unsuccessful_response_logs_portal_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The warning names the portal status code and description."""
+    response = _unsuccessful(
+        [{"Code": "-1002", "Description": "result is empty", "StackTrace": ""}]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert _parse(response) == []
+
+    assert (
+        "API returned unsuccessful response for "
+        "2026-01-01T00:00:00 to 2026-01-06T00:00:00: -1002 result is empty"
+        in caplog.text
+    )
+
+
+def test_unsuccessful_response_logs_a_single_status_object(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One status is an object, the shape an XML mapping uses for a single item."""
+    response = _unsuccessful({"Code": "-1002", "Description": "result is empty"})
+
+    with caplog.at_level(logging.WARNING):
+        assert _parse(response) == []
+
+    assert "-1002 result is empty" in caplog.text
+
+
+def test_unsuccessful_response_logs_every_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Each status code and description is included."""
+    response = _unsuccessful(
+        [
+            {"Code": "-1002", "Description": "result is empty"},
+            {"Code": "-9", "Description": "invalid cpe"},
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        _parse(response)
+
+    assert "-1002 result is empty; -9 invalid cpe" in caplog.text
+
+
+def test_unsuccessful_response_without_status_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A bare ``Success: false`` still says that no status was provided."""
+    with caplog.at_level(logging.WARNING):
+        assert _parse(_response([_curve()], success=False)) == []
+
+    assert "no status details" in caplog.text
+
+
+def test_unsuccessful_response_logs_response_code_when_no_status_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A response code with an empty status list is still named."""
+    response = _unsuccessful([], response_code=-1)
+
+    with caplog.at_level(logging.WARNING):
+        _parse(response)
+
+    assert "response code -1" in caplog.text
 
 
 def test_empty_result_yields_no_readings() -> None:

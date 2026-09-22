@@ -50,6 +50,56 @@ def _to_utc_series(timestamps: list[datetime]) -> list[datetime]:
     return utc_timestamps
 
 
+def _status_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return ``Header.Status.ResponseStatuses.ResponseStatus`` entries.
+
+    The portal's JSON is an XML mapping, so a single status arrives as an
+    object and several arrive as a list.
+    """
+    header = data.get("Header")
+    if not isinstance(header, dict):
+        return []
+    status = header.get("Status")
+    if not isinstance(status, dict):
+        return []
+    response_statuses = status.get("ResponseStatuses")
+    if not isinstance(response_statuses, dict):
+        return []
+    items = response_statuses.get("ResponseStatus")
+    if isinstance(items, dict):
+        return [items]
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    return []
+
+
+def _unsuccessful_reason(data: dict[str, Any]) -> str:
+    """Describe why an ``edm/get`` envelope has ``Body.Success`` false.
+
+    ``Body`` itself is only ``{"Success": false, "Result": null}``. The code
+    and description live on ``Header.Status``.
+    """
+    parts: list[str] = []
+    for item in _status_items(data):
+        code = item.get("Code")
+        description = item.get("Description")
+        code_text = "" if code is None else str(code).strip()
+        description_text = "" if description is None else str(description).strip()
+        if code_text and description_text:
+            parts.append(f"{code_text} {description_text}")
+        elif code_text or description_text:
+            parts.append(code_text or description_text)
+    if parts:
+        return "; ".join(parts)
+
+    header = data.get("Header")
+    status = header.get("Status") if isinstance(header, dict) else None
+    response_code = status.get("ResponseCode") if isinstance(status, dict) else None
+    if response_code not in (None, "", 0, "0"):
+        return f"response code {response_code}"
+    return "no status details"
+
+
 class ERedesClient:
     """Client for interacting with the E-REDES API."""
 
@@ -266,7 +316,13 @@ class ERedesClient:
         try:
             body = data.get("Body", {})
             if not body.get("Success", False):
-                _LOGGER.warning("API returned unsuccessful response")
+                # Body carries no explanation; Header.Status does.
+                _LOGGER.warning(
+                    "API returned unsuccessful response for %s to %s: %s",
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                    _unsuccessful_reason(data),
+                )
                 return ConsumptionData(
                     cpe=cpe, readings=[], start_date=start_date, end_date=end_date
                 )
