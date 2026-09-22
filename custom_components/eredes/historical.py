@@ -17,6 +17,7 @@ from homeassistant.components.recorder.statistics import (
     get_last_statistics,
 )
 from homeassistant.const import UnitOfEnergy
+from homeassistant.util.unit_conversion import EnergyConverter
 
 from .const import DOMAIN
 
@@ -47,6 +48,24 @@ def statistic_id(cpe: str) -> str:
     an entity id — see CONTEXT.md and docs/adr/0002.
     """
     return f"{DOMAIN}:energy_{cpe[-8:].lower()}"
+
+
+def statistic_metadata(cpe: str) -> StatisticMetaData:
+    """Metadata for a CPE's external energy statistic.
+
+    The Energy dashboard picker keeps statistics whose ``unit_class`` is
+    ``energy``. Passing None stores None, and the series never appears there.
+    """
+    return StatisticMetaData(
+        has_mean=False,
+        has_sum=True,
+        mean_type=StatisticMeanType.NONE,
+        name=f"E-REDES Energy ({cpe[-8:]})",
+        source=DOMAIN,
+        statistic_id=statistic_id(cpe),
+        unit_class=EnergyConverter.UNIT_CLASS,
+        unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    )
 
 
 async def async_import_historical_data(
@@ -127,8 +146,13 @@ async def async_import_historical_data(
 
         current_start = current_end
 
+    metadata = statistic_metadata(coordinator.cpe)
     if not all_readings:
-        _LOGGER.debug("No historical data found to import")
+        # An existing series may still need its unit class repaired.
+        if last_stats and stat_id in last_stats:
+            _publish_statistics(hass, metadata, [])
+        else:
+            _LOGGER.debug("No historical data found to import")
         return
 
     # Sort readings by timestamp
@@ -139,30 +163,37 @@ async def async_import_historical_data(
     statistics = _aggregate_to_hourly_statistics(all_readings, initial_sum, after)
 
     if not statistics:
-        _LOGGER.debug("No statistics generated from %d readings", len(all_readings))
+        if last_stats and stat_id in last_stats:
+            _publish_statistics(hass, metadata, [])
+        else:
+            _LOGGER.debug("No statistics generated from %d readings", len(all_readings))
         return
 
-    metadata = StatisticMetaData(
-        has_mean=False,
-        has_sum=True,
-        mean_type=StatisticMeanType.NONE,
-        name=f"E-REDES Energy ({coordinator.cpe[-8:]})",
-        source=DOMAIN,
-        statistic_id=stat_id,
-        unit_class=None,
-        unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-    )
+    _publish_statistics(hass, metadata, statistics)
 
+
+def _publish_statistics(
+    hass: HomeAssistant,
+    metadata: StatisticMetaData,
+    statistics: list[StatisticData],
+) -> None:
+    """Write statistics, or metadata alone when there is nothing new to add."""
     try:
         async_add_external_statistics(hass, metadata, statistics)
-        _LOGGER.debug(
-            "Imported %d hourly stats (%.3f kWh) for %s",
-            len(statistics),
-            statistics[-1]["sum"],
-            stat_id,
-        )
     except Exception:
-        _LOGGER.exception("Failed to add external statistics for %s", stat_id)
+        _LOGGER.exception(
+            "Failed to add external statistics for %s", metadata["statistic_id"]
+        )
+        return
+    if not statistics:
+        _LOGGER.debug("Updated statistic metadata for %s", metadata["statistic_id"])
+        return
+    _LOGGER.debug(
+        "Imported %d hourly stats (%.3f kWh) for %s",
+        len(statistics),
+        statistics[-1]["sum"],
+        metadata["statistic_id"],
+    )
 
 
 def _aggregate_to_hourly_statistics(

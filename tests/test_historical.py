@@ -5,11 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from homeassistant.components.recorder.statistics import valid_statistic_id
+from homeassistant.const import UnitOfEnergy
+from homeassistant.util.unit_conversion import EnergyConverter
 
 from custom_components.eredes.eredes_api.models import ConsumptionReading
 from custom_components.eredes.historical import (
     _aggregate_to_hourly_statistics,
     statistic_id,
+    statistic_metadata,
 )
 
 CPE = "PT0002000012345678AB"
@@ -25,6 +28,16 @@ def _reading(hour: int, minute: int, value_wh: float) -> ConsumptionReading:
         timestamp=datetime(2026, 1, 1, hour, minute, tzinfo=UTC),
         value_wh=value_wh,
     )
+
+
+def test_statistic_metadata_uses_energy_unit_class() -> None:
+    """The Energy dashboard only lists statistics with unit class ``energy``."""
+    metadata = statistic_metadata(CPE)
+
+    assert metadata["unit_class"] == EnergyConverter.UNIT_CLASS == "energy"
+    assert metadata["unit_of_measurement"] == UnitOfEnergy.KILO_WATT_HOUR
+    assert metadata["has_sum"] is True
+    assert metadata["statistic_id"] == "eredes:energy_345678ab"
 
 
 def test_statistic_id_is_valid_external_id() -> None:
